@@ -54,8 +54,9 @@ from homeassistant.const import (
     UnitOfPower,
     UnitOfVolume,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_state_change_event
 
 from tests.common import MockConfigEntry, async_fire_time_changed, patch
 
@@ -1605,6 +1606,109 @@ async def test_reconnect(
     await hass.config_entries.async_unload(mock_entry.entry_id)
 
     assert mock_entry.state is ConfigEntryState.NOT_LOADED
+
+
+@patch("homeassistant.components.dsmr.sensor.DEFAULT_RECONNECT_INTERVAL", 0)
+async def test_failed_reconnect_keeps_entities_unavailable(
+    hass: HomeAssistant, dsmr_connection_fixture: tuple[MagicMock, MagicMock, MagicMock]
+) -> None:
+    """A failed reconnect must not flap entities from unavailable to unknown.
+
+    Once the first telegram has created the entities and the connection drops,
+    the entities go unavailable. A reconnect attempt that fails must leave them
+    unavailable: the `unknown` (connected, awaiting data) state may only appear
+    after a connection actually succeeds, never during a failed retry.
+    """
+    (_connection_factory, transport, protocol) = dsmr_connection_fixture
+
+    entry_data = {
+        "port": "/dev/ttyUSB0",
+        "dsmr_version": "2.2",
+        "serial_id": "1234",
+        "serial_id_gas": "5678",
+    }
+
+    telegram = Telegram()
+    telegram.add(
+        CURRENT_ELECTRICITY_USAGE,
+        CosemObject(
+            (0, 0),
+            [{"value": Decimal("35.0"), "unit": UnitOfPower.WATT}],
+        ),
+        "CURRENT_ELECTRICITY_USAGE",
+    )
+
+    # The connection stays open until `closed` is set; clearing it again makes
+    # the next successful connection block instead of the loop spinning.
+    closed = asyncio.Event()
+
+    async def wait_closed() -> None:
+        await closed.wait()
+        closed.clear()
+
+    protocol.wait_closed = wait_closed
+
+    # First connect succeeds, the reconnect after the disconnect fails, and the
+    # attempt after that succeeds again and blocks on wait_closed.
+    call_count = 0
+
+    async def failing_reconnect_factory(*args: object, **kwargs: object) -> tuple:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise OSError("reconnect failed")
+        return (transport, protocol)
+
+    connection_factory = MagicMock(wraps=failing_reconnect_factory)
+
+    mock_entry = MockConfigEntry(
+        domain="dsmr", unique_id="/dev/ttyUSB0", data=entry_data
+    )
+    mock_entry.add_to_hass(hass)
+
+    entity_id = "sensor.electricity_meter_power_consumption"
+    states: list[str] = []
+
+    @callback
+    def record_state(event: Event[EventStateChangedData]) -> None:
+        new_state = event.data["new_state"]
+        assert new_state is not None
+        states.append(new_state.state)
+
+    with patch(
+        "homeassistant.components.dsmr.sensor.create_dsmr_reader",
+        connection_factory,
+    ):
+        await hass.config_entries.async_setup(mock_entry.entry_id)
+        await hass.async_block_till_done()
+
+        telegram_callback = connection_factory.call_args_list[0][0][2]
+        telegram_callback(telegram)
+        await hass.async_block_till_done()
+
+        state = hass.states.get(entity_id)
+        assert state
+        assert state.state == "35.0"
+
+        # Only record once the entity holds a real value, so the captured
+        # sequence reflects exactly what the disconnect and reconnects cause.
+        unsub = async_track_state_change_event(hass, entity_id, record_state)
+
+        # Drop the connection: the first reconnect fails, the next one succeeds.
+        closed.set()
+        await hass.async_block_till_done()
+        unsub()
+
+    assert connection_factory.call_count >= 3, "failed reconnect not retried"
+
+    # The disconnect makes the entity unavailable, the failed reconnect leaves
+    # it there, and only the successful reconnect reports unknown. Publishing an
+    # empty telegram before the connection succeeds would insert an extra
+    # unavailable -> unknown -> unavailable flap around the failed attempt.
+    deduped = [
+        state for i, state in enumerate(states) if i == 0 or state != states[i - 1]
+    ]
+    assert deduped == [STATE_UNAVAILABLE, STATE_UNKNOWN]
 
 
 async def test_gas_meter_providing_energy_reading(
