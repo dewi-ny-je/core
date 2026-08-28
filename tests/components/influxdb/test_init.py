@@ -14,6 +14,7 @@ from homeassistant.components import influxdb
 from homeassistant.components.influxdb.const import DEFAULT_BUCKET, DOMAIN
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import (
+    CONF_EXCLUDE,
     CONF_PATH,
     PERCENTAGE,
     STATE_OFF,
@@ -22,6 +23,11 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, split_entity_id
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.entityfilter import (
+    CONF_DOMAINS,
+    CONF_ENTITIES,
+    CONF_ENTITY_GLOBS,
+)
 from homeassistant.setup import async_setup_component
 
 from . import (
@@ -368,45 +374,23 @@ async def test_setup_config_path(
 
 
 @pytest.mark.parametrize(
-    ("mock_client", "get_write_api", "config_ext"),
-    [
-        (influxdb.DEFAULT_API_VERSION, _get_write_api_mock_v1, {}),
-        (influxdb.DEFAULT_API_VERSION, _get_write_api_mock_v1, {"precision": "s"}),
-    ],
-    indirect=["mock_client"],
-)
-async def test_setup_minimal_config_no_connection_keys(
-    hass: HomeAssistant,
-    mock_client,
-    get_write_api,
-    config_ext,
-    issue_registry: ir.IssueRegistry,
-) -> None:
-    """Test the setup with non-connection YAML keys creates no deprecation issue."""
-    config = {"influxdb": {}}
-    config["influxdb"].update(config_ext)
-
-    assert await async_setup_component(hass, influxdb.DOMAIN, config)
-    await hass.async_block_till_done()
-
-    assert get_write_api(mock_client).call_count == 2
-
-    conf_entries = hass.config_entries.async_entries(DOMAIN)
-
-    assert len(conf_entries) == 1
-
-    entry = conf_entries[0]
-
-    assert entry.state is ConfigEntryState.LOADED
-    assert entry.data == BASE_V1_CONFIG
-
-    assert not issue_registry.async_get_issue(domain=DOMAIN, issue_id="deprecated_yaml")
-
-
-@pytest.mark.parametrize(
     ("mock_client", "config_ext", "config_base", "get_write_api"),
     [
-        (
+        pytest.param(
+            influxdb.DEFAULT_API_VERSION,
+            {},
+            BASE_V1_CONFIG,
+            _get_write_api_mock_v1,
+            id="no_keys",
+        ),
+        pytest.param(
+            influxdb.DEFAULT_API_VERSION,
+            {"precision": "s"},
+            BASE_V1_CONFIG,
+            _get_write_api_mock_v1,
+            id="option_keys_only",
+        ),
+        pytest.param(
             influxdb.API_VERSION_2,
             {
                 "api_version": influxdb.API_VERSION_2,
@@ -415,11 +399,12 @@ async def test_setup_minimal_config_no_connection_keys(
             },
             BASE_V2_CONFIG,
             _get_write_api_mock_v2,
+            id="connection_keys",
         ),
     ],
     indirect=["mock_client"],
 )
-async def test_setup_minimal_config_with_connection_keys(
+async def test_setup_minimal_config_creates_deprecation_issue(
     hass: HomeAssistant,
     mock_client,
     config_ext,
@@ -427,7 +412,7 @@ async def test_setup_minimal_config_with_connection_keys(
     get_write_api,
     issue_registry: ir.IssueRegistry,
 ) -> None:
-    """Test the setup with connection keys creates a deprecation issue."""
+    """Test that any YAML configuration creates a deprecation issue."""
     config = {"influxdb": {}}
     config["influxdb"].update(config_ext)
 
@@ -523,12 +508,17 @@ async def test_setup_no_import_when_config_entry_exist(
 
 
 async def _setup(
-    hass: HomeAssistant, mock_influx_client, config, get_write_api
+    hass: HomeAssistant,
+    mock_influx_client,
+    config,
+    get_write_api,
+    options: dict[str, Any] | None = None,
 ) -> None:
     """Prepare client for next test and return event handler method."""
     mock_entry = MockConfigEntry(
         domain=DOMAIN,
         data=config,
+        options=options or {},
     )
 
     mock_entry.add_to_hass(hass)
@@ -2272,3 +2262,101 @@ async def test_setup_import_already_exists(
 
     # Deprecation warning should still be shown
     assert issue_registry.async_get_issue(domain=DOMAIN, issue_id="deprecated_yaml")
+
+
+@pytest.mark.parametrize(
+    ("mock_client", "get_write_api", "get_mock_call"),
+    [
+        (
+            influxdb.DEFAULT_API_VERSION,
+            _get_write_api_mock_v1,
+            influxdb.DEFAULT_API_VERSION,
+        ),
+    ],
+    indirect=["mock_client", "get_mock_call"],
+)
+async def test_event_listener_filter_from_options(
+    hass: HomeAssistant, mock_client, get_write_api, get_mock_call
+) -> None:
+    """Test the entity filter is taken from the config entry options."""
+    await _setup(
+        hass,
+        mock_client,
+        BASE_V1_CONFIG,
+        get_write_api,
+        options={
+            CONF_EXCLUDE: {
+                CONF_ENTITIES: ["fake.denylisted"],
+                CONF_DOMAINS: [],
+                CONF_ENTITY_GLOBS: [],
+            }
+        },
+    )
+
+    tests = [
+        FilterTest("fake.ok", True),
+        FilterTest("fake.denylisted", False),
+    ]
+    await execute_filter_test(hass, tests, get_write_api(mock_client), get_mock_call)
+
+
+@pytest.mark.parametrize("mock_client", [influxdb.DEFAULT_API_VERSION], indirect=True)
+@pytest.mark.usefixtures("mock_client")
+async def test_import_yaml_options(hass: HomeAssistant) -> None:
+    """Test that the YAML options are imported into the config entry."""
+    config = {
+        "influxdb": {
+            "exclude": {"entities": ["fake.denylisted"]},
+            "tags": {"instance": "production"},
+        }
+    }
+
+    assert await async_setup_component(hass, influxdb.DOMAIN, config)
+    await hass.async_block_till_done()
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.options[CONF_EXCLUDE] == {
+        CONF_ENTITIES: ["fake.denylisted"],
+        CONF_DOMAINS: [],
+        CONF_ENTITY_GLOBS: [],
+    }
+    assert entry.options[influxdb.CONF_TAGS] == {"instance": "production"}
+
+
+@pytest.mark.parametrize("mock_client", [influxdb.DEFAULT_API_VERSION], indirect=True)
+@pytest.mark.usefixtures("mock_client")
+async def test_migrate_yaml_options_to_existing_entry(hass: HomeAssistant) -> None:
+    """Test that YAML options are migrated into an entry that has none yet."""
+    mock_entry = MockConfigEntry(domain=DOMAIN, data=BASE_V1_CONFIG)
+    mock_entry.add_to_hass(hass)
+
+    config = {"influxdb": {"tags": {"instance": "production"}}}
+
+    assert await async_setup_component(hass, influxdb.DOMAIN, config)
+    await hass.async_block_till_done()
+
+    assert mock_entry.state is ConfigEntryState.LOADED
+    assert mock_entry.options[influxdb.CONF_TAGS] == {"instance": "production"}
+
+
+@pytest.mark.parametrize("mock_client", [influxdb.DEFAULT_API_VERSION], indirect=True)
+@pytest.mark.usefixtures("mock_client")
+async def test_yaml_options_do_not_overwrite_configured_options(
+    hass: HomeAssistant,
+) -> None:
+    """Test that YAML does not overwrite options that were set in the UI."""
+    mock_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=BASE_V1_CONFIG,
+        options={influxdb.CONF_TAGS: {"instance": "from_ui"}},
+    )
+    mock_entry.add_to_hass(hass)
+
+    config = {"influxdb": {"tags": {"instance": "from_yaml"}}}
+
+    assert await async_setup_component(hass, influxdb.DOMAIN, config)
+    await hass.async_block_till_done()
+
+    assert mock_entry.options[influxdb.CONF_TAGS] == {"instance": "from_ui"}

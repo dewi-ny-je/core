@@ -17,6 +17,7 @@ from homeassistant.const import (
     CONF_VERIFY_SSL,
 )
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.entityfilter import INCLUDE_EXCLUDE_BASE_FILTER_SCHEMA
 
 CONF_DB_NAME = "database"
 CONF_BUCKET = "bucket"
@@ -61,6 +62,10 @@ DEFAULT_RANGE_START = "-15m"
 DEFAULT_RANGE_STOP = "now()"
 DEFAULT_FUNCTION_FLUX = "|> limit(n: 1)"
 DEFAULT_MEASUREMENT_ATTR = "unit_of_measurement"
+DEFAULT_RETRY_COUNT = 0
+
+MEASUREMENT_ATTRS = ["unit_of_measurement", "domain__device_class", "entity_id"]
+PRECISIONS = ["ms", "s", "us", "ns"]
 
 INFLUX_CONF_MEASUREMENT = "measurement"
 INFLUX_CONF_TAGS = "tags"
@@ -165,3 +170,41 @@ COMPONENT_CONFIG_SCHEMA_CONNECTION_VALIDATORS = {
     ): v
     for k, v in COMPONENT_CONFIG_SCHEMA_CONNECTION.items()
 }
+
+
+CUSTOMIZE_ENTITY_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_OVERRIDE_MEASUREMENT): cv.string,
+        vol.Optional(CONF_IGNORE_ATTRIBUTES): vol.All(cv.ensure_list, [cv.string]),
+    }
+)
+
+OPTIONS_SCHEMA = INCLUDE_EXCLUDE_BASE_FILTER_SCHEMA.extend(
+    {
+        vol.Optional(CONF_RETRY_COUNT, default=DEFAULT_RETRY_COUNT): cv.positive_int,
+        vol.Optional(CONF_PRECISION): vol.In(PRECISIONS),
+        vol.Optional(CONF_DEFAULT_MEASUREMENT): cv.string,
+        vol.Optional(CONF_MEASUREMENT_ATTR, default=DEFAULT_MEASUREMENT_ATTR): vol.In(
+            MEASUREMENT_ATTRS
+        ),
+        vol.Optional(CONF_OVERRIDE_MEASUREMENT): cv.string,
+        vol.Optional(CONF_TAGS, default={}): vol.Schema({cv.string: cv.string}),
+        vol.Optional(CONF_TAGS_ATTRIBUTES, default=[]): vol.All(
+            cv.ensure_list, [cv.string]
+        ),
+        vol.Optional(CONF_IGNORE_ATTRIBUTES, default=[]): vol.All(
+            cv.ensure_list, [cv.string]
+        ),
+        vol.Optional(CONF_COMPONENT_CONFIG, default={}): vol.Schema(
+            {cv.entity_id: CUSTOMIZE_ENTITY_SCHEMA}
+        ),
+        vol.Optional(CONF_COMPONENT_CONFIG_GLOB, default={}): vol.Schema(
+            {cv.string: CUSTOMIZE_ENTITY_SCHEMA}
+        ),
+        vol.Optional(CONF_COMPONENT_CONFIG_DOMAIN, default={}): vol.Schema(
+            {cv.string: CUSTOMIZE_ENTITY_SCHEMA}
+        ),
+    }
+)
+
+OPTION_KEYS = {key.schema for key in OPTIONS_SCHEMA.schema}

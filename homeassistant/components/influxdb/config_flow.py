@@ -9,9 +9,20 @@ import voluptuous as vol
 from yarl import URL
 
 from homeassistant.components.file_upload import process_uploaded_file
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
 from homeassistant.const import (
+    CONF_DOMAIN,
+    CONF_DOMAINS,
+    CONF_ENTITIES,
+    CONF_ENTITY_ID,
+    CONF_EXCLUDE,
     CONF_HOST,
+    CONF_INCLUDE,
     CONF_PASSWORD,
     CONF_PATH,
     CONF_PORT,
@@ -21,33 +32,90 @@ from homeassistant.const import (
     CONF_USERNAME,
     CONF_VERIFY_SSL,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.data_entry_flow import section
+from homeassistant.helpers.entityfilter import CONF_ENTITY_GLOBS
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     FileSelector,
     FileSelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    ObjectSelector,
+    ObjectSelectorConfig,
+    SelectOptionDict,
+    Selector,
+    SelectSelector,
+    SelectSelectorConfig,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
 )
 from homeassistant.helpers.storage import STORAGE_DIR
 
-from . import DOMAIN, create_influx_url, get_influx_connection
+from . import DOMAIN, create_influx_url, get_influx_connection, options_from_config
 from .const import (
     API_VERSION_2,
     CONF_API_VERSION,
     CONF_BUCKET,
+    CONF_COMPONENT_CONFIG,
+    CONF_COMPONENT_CONFIG_DOMAIN,
+    CONF_COMPONENT_CONFIG_GLOB,
     CONF_DB_NAME,
+    CONF_DEFAULT_MEASUREMENT,
+    CONF_IGNORE_ATTRIBUTES,
+    CONF_MEASUREMENT_ATTR,
     CONF_ORG,
+    CONF_OVERRIDE_MEASUREMENT,
+    CONF_PRECISION,
+    CONF_RETRY_COUNT,
     CONF_SSL_CA_CERT,
+    CONF_TAGS,
+    CONF_TAGS_ATTRIBUTES,
     DEFAULT_API_VERSION,
     DEFAULT_BUCKET,
     DEFAULT_DATABASE,
     DEFAULT_HOST,
+    DEFAULT_MEASUREMENT_ATTR,
     DEFAULT_PORT,
+    DEFAULT_RETRY_COUNT,
     DEFAULT_VERIFY_SSL,
+    MEASUREMENT_ATTRS,
+    PRECISIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+MEASUREMENT_ATTR_LABELS = {
+    "unit_of_measurement": "Unit of measurement",
+    "domain__device_class": "Domain and device class",
+    "entity_id": "Entity ID",
+}
+MEASUREMENT_ATTR_OPTIONS = [
+    SelectOptionDict(value=attr, label=MEASUREMENT_ATTR_LABELS[attr])
+    for attr in MEASUREMENT_ATTRS
+]
+
+CONF_ENTITY_GLOB = "entity_glob"
+CONF_KEY = "key"
+CONF_VALUE = "value"
+
+FILTER_KEYS = {CONF_EXCLUDE, CONF_INCLUDE}
+ATTRIBUTE_KEYS = {CONF_IGNORE_ATTRIBUTES, CONF_TAGS, CONF_TAGS_ATTRIBUTES}
+MEASUREMENT_KEYS = {
+    CONF_DEFAULT_MEASUREMENT,
+    CONF_MEASUREMENT_ATTR,
+    CONF_OVERRIDE_MEASUREMENT,
+    CONF_PRECISION,
+    CONF_RETRY_COUNT,
+}
+CUSTOMIZE_KEYS = {
+    CONF_COMPONENT_CONFIG,
+    CONF_COMPONENT_CONFIG_DOMAIN,
+    CONF_COMPONENT_CONFIG_GLOB,
+}
 
 INFLUXDB_V1_SCHEMA = vol.Schema(
     {
@@ -161,8 +229,90 @@ async def _save_uploaded_cert_file(hass: HomeAssistant, uploaded_file_id: str) -
     return await hass.async_add_executor_job(_process_upload)
 
 
+def _domain_selector(hass: HomeAssistant, multiple: bool) -> SelectSelector:
+    """Return a selector offering the domains currently known to Home Assistant."""
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=sorted({state.domain for state in hass.states.async_all()}),
+            multiple=multiple,
+            custom_value=True,
+            sort=True,
+        )
+    )
+
+
+def _attribute_selector(hass: HomeAssistant) -> SelectSelector:
+    """Return a selector offering the attributes currently in use."""
+    attributes: set[str] = set()
+    for state in hass.states.async_all():
+        attributes.update(state.attributes)
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=sorted(attributes),
+            multiple=True,
+            custom_value=True,
+            sort=True,
+        )
+    )
+
+
+def _filter_schema(hass: HomeAssistant) -> vol.Schema:
+    """Return the schema of a single entity filter."""
+    return vol.Schema(
+        {
+            vol.Optional(CONF_DOMAINS, default=list): _domain_selector(
+                hass, multiple=True
+            ),
+            vol.Optional(CONF_ENTITIES, default=list): EntitySelector(
+                EntitySelectorConfig(multiple=True)
+            ),
+            vol.Optional(CONF_ENTITY_GLOBS, default=list): TextSelector(
+                TextSelectorConfig(multiple=True)
+            ),
+        }
+    )
+
+
+def _customize_selector(
+    hass: HomeAssistant, key: str, key_selector: Selector
+) -> ObjectSelector:
+    """Return a selector for a list of per entity, glob or domain overrides."""
+    return ObjectSelector(
+        ObjectSelectorConfig(
+            fields={
+                key: {"selector": key_selector, "required": True},
+                CONF_OVERRIDE_MEASUREMENT: {"selector": TextSelector()},
+                CONF_IGNORE_ATTRIBUTES: {"selector": _attribute_selector(hass)},
+            },
+            multiple=True,
+            label_field=key,
+            translation_key="customize",
+        )
+    )
+
+
+def _customize_to_rows(customize: dict[str, dict[str, Any]], key: str) -> list[dict]:
+    """Convert stored overrides into rows for the object selector."""
+    return [{key: pattern, **config} for pattern, config in customize.items()]
+
+
+def _rows_to_customize(rows: list[dict[str, Any]], key: str) -> dict[str, dict]:
+    """Convert rows from the object selector into stored overrides."""
+    return {
+        row[key]: {name: value for name, value in row.items() if name != key}
+        for row in rows
+    }
+
+
 class InfluxDBConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for InfluxDB."""
+
+    @staticmethod
+    @callback
+    @override
+    def async_get_options_flow(config_entry: ConfigEntry) -> InfluxDBOptionsFlow:
+        """Get the options flow for this handler."""
+        return InfluxDBOptionsFlow()
 
     @override
     async def async_step_user(
@@ -387,4 +537,211 @@ class InfluxDBConfigFlow(ConfigFlow, domain=DOMAIN):
         if errors:
             return self.async_abort(reason=errors["base"])
 
-        return self.async_create_entry(title=title, data=data)
+        return self.async_create_entry(
+            title=title, data=data, options=options_from_config(import_data)
+        )
+
+
+class InfluxDBOptionsFlow(OptionsFlowWithReload):
+    """Handle the InfluxDB options."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Let the user pick which group of options to change."""
+        return self.async_show_menu(
+            step_id="init",
+            menu_options=["filter", "attributes", "measurement", "customize"],
+        )
+
+    @callback
+    def _async_save(
+        self, replaced_keys: set[str], updates: dict[str, Any]
+    ) -> ConfigFlowResult:
+        """Store the options of a single step, dropping the ones cleared by the user."""
+        options = {
+            key: value
+            for key, value in self.config_entry.options.items()
+            if key not in replaced_keys
+        }
+        return self.async_create_entry(data=options | updates)
+
+    async def async_step_filter(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Configure which entities are written to InfluxDB."""
+        if user_input is not None:
+            return self._async_save(
+                FILTER_KEYS,
+                {
+                    CONF_INCLUDE: user_input[CONF_INCLUDE],
+                    CONF_EXCLUDE: user_input[CONF_EXCLUDE],
+                },
+            )
+
+        options = self.config_entry.options
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_INCLUDE): section(_filter_schema(self.hass)),
+                vol.Required(CONF_EXCLUDE): section(_filter_schema(self.hass)),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="filter",
+            data_schema=self.add_suggested_values_to_schema(
+                schema,
+                {
+                    CONF_INCLUDE: options.get(CONF_INCLUDE, {}),
+                    CONF_EXCLUDE: options.get(CONF_EXCLUDE, {}),
+                },
+            ),
+        )
+
+    async def async_step_attributes(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Configure how entity attributes are written to InfluxDB."""
+        if user_input is not None:
+            return self._async_save(
+                ATTRIBUTE_KEYS,
+                {
+                    CONF_IGNORE_ATTRIBUTES: user_input[CONF_IGNORE_ATTRIBUTES],
+                    CONF_TAGS_ATTRIBUTES: user_input[CONF_TAGS_ATTRIBUTES],
+                    CONF_TAGS: {
+                        tag[CONF_KEY]: tag[CONF_VALUE] for tag in user_input[CONF_TAGS]
+                    },
+                },
+            )
+
+        options = self.config_entry.options
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_IGNORE_ATTRIBUTES, default=list): _attribute_selector(
+                    self.hass
+                ),
+                vol.Optional(CONF_TAGS_ATTRIBUTES, default=list): _attribute_selector(
+                    self.hass
+                ),
+                vol.Optional(CONF_TAGS, default=list): ObjectSelector(
+                    ObjectSelectorConfig(
+                        fields={
+                            CONF_KEY: {"selector": TextSelector(), "required": True},
+                            CONF_VALUE: {"selector": TextSelector(), "required": True},
+                        },
+                        multiple=True,
+                        label_field=CONF_KEY,
+                        description_field=CONF_VALUE,
+                        translation_key="tags",
+                    )
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="attributes",
+            data_schema=self.add_suggested_values_to_schema(
+                schema,
+                {
+                    CONF_IGNORE_ATTRIBUTES: options.get(CONF_IGNORE_ATTRIBUTES, []),
+                    CONF_TAGS_ATTRIBUTES: options.get(CONF_TAGS_ATTRIBUTES, []),
+                    CONF_TAGS: [
+                        {CONF_KEY: key, CONF_VALUE: value}
+                        for key, value in options.get(CONF_TAGS, {}).items()
+                    ],
+                },
+            ),
+        )
+
+    async def async_step_measurement(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Configure the measurement names and write behavior."""
+        if user_input is not None:
+            return self._async_save(MEASUREMENT_KEYS, user_input)
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_MEASUREMENT_ATTR, default=DEFAULT_MEASUREMENT_ATTR
+                ): SelectSelector(
+                    SelectSelectorConfig(options=MEASUREMENT_ATTR_OPTIONS)
+                ),
+                vol.Optional(CONF_DEFAULT_MEASUREMENT): TextSelector(),
+                vol.Optional(CONF_OVERRIDE_MEASUREMENT): TextSelector(),
+                vol.Optional(CONF_PRECISION): SelectSelector(
+                    SelectSelectorConfig(
+                        options=PRECISIONS,
+                        translation_key="precision",
+                    )
+                ),
+                vol.Required(CONF_RETRY_COUNT, default=DEFAULT_RETRY_COUNT): vol.All(
+                    NumberSelector(
+                        NumberSelectorConfig(min=0, step=1, mode=NumberSelectorMode.BOX)
+                    ),
+                    vol.Coerce(int),
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="measurement",
+            data_schema=self.add_suggested_values_to_schema(
+                schema, self.config_entry.options
+            ),
+        )
+
+    async def async_step_customize(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Configure the per entity, glob and domain overrides."""
+        if user_input is not None:
+            return self._async_save(
+                CUSTOMIZE_KEYS,
+                {
+                    CONF_COMPONENT_CONFIG: _rows_to_customize(
+                        user_input[CONF_COMPONENT_CONFIG], CONF_ENTITY_ID
+                    ),
+                    CONF_COMPONENT_CONFIG_GLOB: _rows_to_customize(
+                        user_input[CONF_COMPONENT_CONFIG_GLOB], CONF_ENTITY_GLOB
+                    ),
+                    CONF_COMPONENT_CONFIG_DOMAIN: _rows_to_customize(
+                        user_input[CONF_COMPONENT_CONFIG_DOMAIN], CONF_DOMAIN
+                    ),
+                },
+            )
+
+        options = self.config_entry.options
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_COMPONENT_CONFIG, default=list): _customize_selector(
+                    self.hass, CONF_ENTITY_ID, EntitySelector()
+                ),
+                vol.Optional(
+                    CONF_COMPONENT_CONFIG_GLOB, default=list
+                ): _customize_selector(self.hass, CONF_ENTITY_GLOB, TextSelector()),
+                vol.Optional(
+                    CONF_COMPONENT_CONFIG_DOMAIN, default=list
+                ): _customize_selector(
+                    self.hass, CONF_DOMAIN, _domain_selector(self.hass, multiple=False)
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="customize",
+            data_schema=self.add_suggested_values_to_schema(
+                schema,
+                {
+                    CONF_COMPONENT_CONFIG: _customize_to_rows(
+                        options.get(CONF_COMPONENT_CONFIG, {}), CONF_ENTITY_ID
+                    ),
+                    CONF_COMPONENT_CONFIG_GLOB: _customize_to_rows(
+                        options.get(CONF_COMPONENT_CONFIG_GLOB, {}), CONF_ENTITY_GLOB
+                    ),
+                    CONF_COMPONENT_CONFIG_DOMAIN: _customize_to_rows(
+                        options.get(CONF_COMPONENT_CONFIG_DOMAIN, {}), CONF_DOMAIN
+                    ),
+                },
+            ),
+        )

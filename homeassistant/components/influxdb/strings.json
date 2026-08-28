@@ -1,5 +1,7 @@
 {
   "common": {
+    "ignore_attributes": "Attributes to ignore",
+    "override_measurement": "Override measurement name",
     "ssl_ca_cert": "SSL CA certificate (Optional)"
   },
   "config": {
@@ -93,28 +95,158 @@
   },
   "issues": {
     "deprecated_yaml": {
-      "description": "Configuring InfluxDB connection settings using YAML is being removed. Your existing YAML connection configuration has been imported into the UI automatically.\n\nRemove the `{domain}` connection and authentication keys from your `configuration.yaml` file and restart Home Assistant to fix this issue. Other options like `include`, `exclude`, and `tags` remain in YAML for now. \n\nThe following keys should be removed:\n- `api_version`\n- `host`\n- `port`\n- `ssl`\n- `verify_ssl`\n- `ssl_ca_cert`\n- `username`\n- `password`\n- `database`\n- `token`\n- `organization`\n- `bucket`\n- `path`",
+      "description": "Configuring InfluxDB using YAML is being removed. Your existing YAML configuration has been imported into the UI automatically.\n\nRemove the `{domain}` configuration from your `configuration.yaml` file and restart Home Assistant to fix this issue.",
       "title": "The InfluxDB YAML configuration is being removed"
     },
     "deprecated_yaml_import_issue_cannot_connect": {
-      "description": "Configuring InfluxDB connection settings using YAML is being removed but the import failed because Home Assistant could not connect to the InfluxDB server.\n\nPlease correct your YAML configuration and restart Home Assistant.\n\nAlternatively you can remove the `{domain}` connection and authentication keys from your `configuration.yaml` file and continue to [set up the integration]({url}) manually. \n\nThe following keys should be removed:\n- `api_version`\n- `host`\n- `port`\n- `ssl`\n- `verify_ssl`\n- `ssl_ca_cert`\n- `username`\n- `password`\n- `database`\n- `token`\n- `organization`\n- `bucket`\n- `path`",
+      "description": "Configuring InfluxDB using YAML is being removed but the import failed because Home Assistant could not connect to the InfluxDB server.\n\nPlease correct your YAML configuration and restart Home Assistant.\n\nAlternatively you can remove the `{domain}` configuration from your `configuration.yaml` file and continue to [set up the integration]({url}) manually.",
       "title": "Failed to import InfluxDB YAML configuration"
     },
     "deprecated_yaml_import_issue_invalid_auth": {
-      "description": "Configuring InfluxDB connection settings using YAML is being removed but the import failed because the provided credentials are invalid.\n\nPlease correct your YAML configuration and restart Home Assistant.\n\nAlternatively you can remove the `{domain}` connection and authentication keys from your `configuration.yaml` file and continue to [set up the integration]({url}) manually. \n\nThe following keys should be removed:\n- `api_version`\n- `host`\n- `port`\n- `ssl`\n- `verify_ssl`\n- `ssl_ca_cert`\n- `username`\n- `password`\n- `database`\n- `token`\n- `organization`\n- `bucket`\n- `path`",
+      "description": "Configuring InfluxDB using YAML is being removed but the import failed because the provided credentials are invalid.\n\nPlease correct your YAML configuration and restart Home Assistant.\n\nAlternatively you can remove the `{domain}` configuration from your `configuration.yaml` file and continue to [set up the integration]({url}) manually.",
       "title": "[%key:component::influxdb::issues::deprecated_yaml_import_issue_cannot_connect::title%]"
     },
     "deprecated_yaml_import_issue_invalid_database": {
-      "description": "Configuring InfluxDB connection settings using YAML is being removed but the import failed because the specified database was not found.\n\nPlease correct your YAML configuration and restart Home Assistant.\n\nAlternatively you can remove the `{domain}` connection and authentication keys from your `configuration.yaml` file and continue to [set up the integration]({url}) manually. \n\nThe following keys should be removed:\n- `api_version`\n- `host`\n- `port`\n- `ssl`\n- `verify_ssl`\n- `ssl_ca_cert`\n- `username`\n- `password`\n- `database`\n- `token`\n- `organization`\n- `bucket`\n- `path`",
+      "description": "Configuring InfluxDB using YAML is being removed but the import failed because the specified database was not found.\n\nPlease correct your YAML configuration and restart Home Assistant.\n\nAlternatively you can remove the `{domain}` configuration from your `configuration.yaml` file and continue to [set up the integration]({url}) manually.",
       "title": "[%key:component::influxdb::issues::deprecated_yaml_import_issue_cannot_connect::title%]"
     },
     "deprecated_yaml_import_issue_ssl_error": {
-      "description": "Configuring InfluxDB connection settings using YAML is being removed but the import failed due to an SSL certificate error.\n\nPlease correct your YAML configuration and restart Home Assistant.\n\nAlternatively you can remove the `{domain}` connection and authentication keys from your `configuration.yaml` file and continue to [set up the integration]({url}) manually. \n\nThe following keys should be removed:\n- `api_version`\n- `host`\n- `port`\n- `ssl`\n- `verify_ssl`\n- `ssl_ca_cert`\n- `username`\n- `password`\n- `database`\n- `token`\n- `organization`\n- `bucket`\n- `path`",
+      "description": "Configuring InfluxDB using YAML is being removed but the import failed because of an SSL certificate error.\n\nPlease correct your YAML configuration and restart Home Assistant.\n\nAlternatively you can remove the `{domain}` configuration from your `configuration.yaml` file and continue to [set up the integration]({url}) manually.",
       "title": "[%key:component::influxdb::issues::deprecated_yaml_import_issue_cannot_connect::title%]"
     },
     "deprecated_yaml_import_issue_unknown": {
-      "description": "Configuring InfluxDB connection settings using YAML is being removed but the import failed due to an unknown error.\n\nPlease correct your YAML configuration and restart Home Assistant.\n\nAlternatively you can remove the `{domain}` connection and authentication keys from your `configuration.yaml` file and continue to [set up the integration]({url}) manually. \n\nThe following keys should be removed:\n- `api_version`\n- `host`\n- `port`\n- `ssl`\n- `verify_ssl`\n- `ssl_ca_cert`\n- `username`\n- `password`\n- `database`\n- `token`\n- `organization`\n- `bucket`\n- `path`",
+      "description": "Configuring InfluxDB using YAML is being removed but the import failed because of an unknown error.\n\nPlease correct your YAML configuration and restart Home Assistant.\n\nAlternatively you can remove the `{domain}` configuration from your `configuration.yaml` file and continue to [set up the integration]({url}) manually.",
       "title": "[%key:component::influxdb::issues::deprecated_yaml_import_issue_cannot_connect::title%]"
+    }
+  },
+  "options": {
+    "step": {
+      "attributes": {
+        "data": {
+          "ignore_attributes": "[%key:component::influxdb::common::ignore_attributes%]",
+          "tags": "Tags",
+          "tags_attributes": "Attributes to use as tags"
+        },
+        "data_description": {
+          "ignore_attributes": "These attributes are not written to InfluxDB as fields.",
+          "tags": "Tags that are added to every measurement written to InfluxDB.",
+          "tags_attributes": "These attributes are written as tags instead of fields."
+        },
+        "title": "Attributes and tags"
+      },
+      "customize": {
+        "data": {
+          "component_config": "Entity overrides",
+          "component_config_domain": "Domain overrides",
+          "component_config_glob": "Entity pattern overrides"
+        },
+        "data_description": {
+          "component_config": "Overrides applied to a single entity.",
+          "component_config_domain": "Overrides applied to all entities in a domain.",
+          "component_config_glob": "Overrides applied to all entities matching a pattern, for example `sensor.weather_*`."
+        },
+        "description": "Override the measurement name and ignored attributes for specific entities, entity patterns or domains.",
+        "title": "Per-entity overrides"
+      },
+      "filter": {
+        "description": "Choose which entities are written to InfluxDB. When the include filter is empty, everything that is not excluded is written.",
+        "sections": {
+          "exclude": {
+            "data": {
+              "domains": "[%key:component::influxdb::options::step::filter::sections::include::data::domains%]",
+              "entities": "[%key:component::influxdb::options::step::filter::sections::include::data::entities%]",
+              "entity_globs": "[%key:component::influxdb::options::step::filter::sections::include::data::entity_globs%]"
+            },
+            "data_description": {
+              "domains": "All entities in these domains are excluded.",
+              "entities": "These entities are excluded.",
+              "entity_globs": "Entities matching these patterns are excluded, for example `sensor.weather_*`."
+            },
+            "description": "Entities matching one of these are never written to InfluxDB.",
+            "name": "Exclude"
+          },
+          "include": {
+            "data": {
+              "domains": "Domains",
+              "entities": "Entities",
+              "entity_globs": "Entity patterns"
+            },
+            "data_description": {
+              "domains": "All entities in these domains are included.",
+              "entities": "These entities are included.",
+              "entity_globs": "Entities matching these patterns are included, for example `sensor.weather_*`."
+            },
+            "description": "Only entities matching one of these is written to InfluxDB.",
+            "name": "Include"
+          }
+        },
+        "title": "Entity filter"
+      },
+      "init": {
+        "menu_options": {
+          "attributes": "Attributes and tags",
+          "customize": "Per-entity overrides",
+          "filter": "Entity filter",
+          "measurement": "Measurements and writing"
+        },
+        "title": "InfluxDB options"
+      },
+      "measurement": {
+        "data": {
+          "default_measurement": "Default measurement name",
+          "max_retries": "Write retries",
+          "measurement_attr": "Measurement name source",
+          "override_measurement": "[%key:component::influxdb::common::override_measurement%]",
+          "precision": "Precision"
+        },
+        "data_description": {
+          "default_measurement": "Used when the selected source is empty for an entity. Defaults to the entity ID.",
+          "max_retries": "How often a failed write is retried before the data is dropped.",
+          "measurement_attr": "What the measurement name of an entity is based on.",
+          "override_measurement": "Write every entity to this measurement, ignoring the measurement name source.",
+          "precision": "The timestamp precision used when writing to InfluxDB."
+        },
+        "title": "Measurements and writing"
+      }
+    }
+  },
+  "selector": {
+    "customize": {
+      "fields": {
+        "domain": {
+          "name": "Domain"
+        },
+        "entity_glob": {
+          "name": "Entity pattern"
+        },
+        "entity_id": {
+          "name": "Entity"
+        },
+        "ignore_attributes": {
+          "name": "[%key:component::influxdb::common::ignore_attributes%]"
+        },
+        "override_measurement": {
+          "name": "[%key:component::influxdb::common::override_measurement%]"
+        }
+      }
+    },
+    "precision": {
+      "options": {
+        "ms": "Milliseconds",
+        "ns": "Nanoseconds",
+        "s": "Seconds",
+        "us": "Microseconds"
+      }
+    },
+    "tags": {
+      "fields": {
+        "key": {
+          "name": "Name"
+        },
+        "value": {
+          "name": "Value"
+        }
+      }
     }
   }
 }

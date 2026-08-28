@@ -18,14 +18,11 @@ import requests.exceptions
 import urllib3.exceptions
 import voluptuous as vol
 
-from homeassistant import config as conf_util
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.const import (
     CONF_DOMAIN,
     CONF_ENTITY_ID,
-    CONF_EXCLUDE,
     CONF_HOST,
-    CONF_INCLUDE,
     CONF_PASSWORD,
     CONF_PATH,
     CONF_PORT,
@@ -44,12 +41,9 @@ from homeassistant.const import (
 from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import config_validation as cv, state as state_helper
+from homeassistant.helpers import state as state_helper
 from homeassistant.helpers.entity_values import EntityValues
-from homeassistant.helpers.entityfilter import (
-    INCLUDE_EXCLUDE_BASE_FILTER_SCHEMA,
-    convert_include_exclude_filter,
-)
+from homeassistant.helpers.entityfilter import convert_include_exclude_filter
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -60,7 +54,6 @@ from .const import (
     CLIENT_ERROR_V1,
     CLIENT_ERROR_V2,
     CODE_INVALID_INPUTS,
-    COMPONENT_CONFIG_SCHEMA_CONNECTION,
     COMPONENT_CONFIG_SCHEMA_CONNECTION_VALIDATORS,
     CONF_API_VERSION,
     CONF_BUCKET,
@@ -81,7 +74,6 @@ from .const import (
     CONNECTION_ERROR,
     DEFAULT_API_VERSION,
     DEFAULT_HOST_V2,
-    DEFAULT_MEASUREMENT_ATTR,
     DEFAULT_SSL_V2,
     DOMAIN,
     EVENT_NEW_STATE,
@@ -92,6 +84,8 @@ from .const import (
     INFLUX_CONF_TAGS,
     INFLUX_CONF_TIME,
     INFLUX_CONF_VALUE,
+    OPTION_KEYS,
+    OPTIONS_SCHEMA,
     QUERY_ERROR,
     QUEUE_BACKLOG_SECONDS,
     RE_DECIMAL,
@@ -160,43 +154,7 @@ def validate_version_specific_config(conf: dict) -> dict:
     return conf
 
 
-_CUSTOMIZE_ENTITY_SCHEMA = vol.Schema(
-    {
-        vol.Optional(CONF_OVERRIDE_MEASUREMENT): cv.string,
-        vol.Optional(CONF_IGNORE_ATTRIBUTES): vol.All(cv.ensure_list, [cv.string]),
-    }
-)
-
-_INFLUX_BASE_SCHEMA = INCLUDE_EXCLUDE_BASE_FILTER_SCHEMA.extend(
-    {
-        vol.Optional(CONF_RETRY_COUNT, default=0): cv.positive_int,
-        vol.Optional(CONF_DEFAULT_MEASUREMENT): cv.string,
-        vol.Optional(CONF_MEASUREMENT_ATTR, default=DEFAULT_MEASUREMENT_ATTR): vol.In(
-            ["unit_of_measurement", "domain__device_class", "entity_id"]
-        ),
-        vol.Optional(CONF_OVERRIDE_MEASUREMENT): cv.string,
-        vol.Optional(CONF_TAGS, default={}): vol.Schema({cv.string: cv.string}),
-        vol.Optional(CONF_TAGS_ATTRIBUTES, default=[]): vol.All(
-            cv.ensure_list, [cv.string]
-        ),
-        vol.Optional(CONF_IGNORE_ATTRIBUTES, default=[]): vol.All(
-            cv.ensure_list, [cv.string]
-        ),
-        vol.Optional(CONF_COMPONENT_CONFIG, default={}): vol.Schema(
-            {cv.entity_id: _CUSTOMIZE_ENTITY_SCHEMA}
-        ),
-        vol.Optional(CONF_COMPONENT_CONFIG_GLOB, default={}): vol.Schema(
-            {cv.string: _CUSTOMIZE_ENTITY_SCHEMA}
-        ),
-        vol.Optional(CONF_COMPONENT_CONFIG_DOMAIN, default={}): vol.Schema(
-            {cv.string: _CUSTOMIZE_ENTITY_SCHEMA}
-        ),
-    }
-)
-
-INFLUX_SCHEMA = _INFLUX_BASE_SCHEMA.extend(
-    COMPONENT_CONFIG_SCHEMA_CONNECTION_VALIDATORS
-)
+INFLUX_SCHEMA = OPTIONS_SCHEMA.extend(COMPONENT_CONFIG_SCHEMA_CONNECTION_VALIDATORS)
 
 
 CONFIG_SCHEMA = vol.Schema(
@@ -481,12 +439,27 @@ def get_influx_connection(  # noqa: C901
     return InfluxClient(databases, write_v1, query_v1, close_v1)
 
 
+def options_from_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the options of a validated YAML configuration."""
+    return {key: value for key, value in config.items() if key in OPTION_KEYS}
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the InfluxDB component."""
     if DOMAIN not in config:
         return True
 
-    hass.async_create_task(_async_setup(hass, config[DOMAIN]))
+    domain_config = config[DOMAIN]
+
+    # An entry created before the options could be configured in the UI still has
+    # them in YAML. Import them here, before the entry is set up.
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if entries and not entries[0].options:
+        hass.config_entries.async_update_entry(
+            entries[0], options=options_from_config(domain_config)
+        )
+
+    hass.async_create_task(_async_setup(hass, domain_config))
 
     return True
 
@@ -505,45 +478,12 @@ async def _async_setup(hass: HomeAssistant, config: dict[str, Any]) -> None:
         async_create_deprecated_yaml_issue(hass, error=reason)
         return
 
-    # If we are here, the entry already exists (single instance allowed)
-    if config.keys() & (
-        {k.schema for k in COMPONENT_CONFIG_SCHEMA_CONNECTION} - {CONF_PRECISION}
-    ):
-        async_create_deprecated_yaml_issue(hass)
+    async_create_deprecated_yaml_issue(hass)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: InfluxDBConfigEntry) -> bool:
     """Set up InfluxDB from a config entry."""
-    data = entry.data
-
-    hass_config = await conf_util.async_hass_config_yaml(hass)
-
-    influx_yaml = CONFIG_SCHEMA(hass_config).get(DOMAIN, {})
-    default_filter_settings: dict[str, Any] = {
-        "entity_globs": [],
-        "entities": [],
-        "domains": [],
-    }
-
-    options = {
-        CONF_RETRY_COUNT: influx_yaml.get(CONF_RETRY_COUNT, 0),
-        CONF_PRECISION: influx_yaml.get(CONF_PRECISION),
-        CONF_MEASUREMENT_ATTR: influx_yaml.get(
-            CONF_MEASUREMENT_ATTR, DEFAULT_MEASUREMENT_ATTR
-        ),
-        CONF_DEFAULT_MEASUREMENT: influx_yaml.get(CONF_DEFAULT_MEASUREMENT),
-        CONF_OVERRIDE_MEASUREMENT: influx_yaml.get(CONF_OVERRIDE_MEASUREMENT),
-        CONF_INCLUDE: influx_yaml.get(CONF_INCLUDE, default_filter_settings),
-        CONF_EXCLUDE: influx_yaml.get(CONF_EXCLUDE, default_filter_settings),
-        CONF_TAGS: influx_yaml.get(CONF_TAGS, {}),
-        CONF_TAGS_ATTRIBUTES: influx_yaml.get(CONF_TAGS_ATTRIBUTES, []),
-        CONF_IGNORE_ATTRIBUTES: influx_yaml.get(CONF_IGNORE_ATTRIBUTES, []),
-        CONF_COMPONENT_CONFIG: influx_yaml.get(CONF_COMPONENT_CONFIG, {}),
-        CONF_COMPONENT_CONFIG_DOMAIN: influx_yaml.get(CONF_COMPONENT_CONFIG_DOMAIN, {}),
-        CONF_COMPONENT_CONFIG_GLOB: influx_yaml.get(CONF_COMPONENT_CONFIG_GLOB, {}),
-    }
-
-    config = data | options
+    config = dict(entry.data) | OPTIONS_SCHEMA(dict(entry.options))
 
     try:
         influx = await hass.async_add_executor_job(get_influx_connection, config, True)

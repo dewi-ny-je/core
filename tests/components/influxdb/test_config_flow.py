@@ -14,15 +14,30 @@ from homeassistant.components.influxdb import (
     API_VERSION_2,
     CONF_API_VERSION,
     CONF_BUCKET,
+    CONF_COMPONENT_CONFIG,
+    CONF_COMPONENT_CONFIG_DOMAIN,
+    CONF_COMPONENT_CONFIG_GLOB,
     CONF_DB_NAME,
+    CONF_DEFAULT_MEASUREMENT,
+    CONF_IGNORE_ATTRIBUTES,
+    CONF_MEASUREMENT_ATTR,
     CONF_ORG,
+    CONF_OVERRIDE_MEASUREMENT,
+    CONF_PRECISION,
+    CONF_RETRY_COUNT,
     CONF_SSL_CA_CERT,
+    CONF_TAGS,
+    CONF_TAGS_ATTRIBUTES,
     DEFAULT_API_VERSION,
     DOMAIN,
     ApiException,
 )
 from homeassistant.const import (
+    CONF_DOMAIN,
+    CONF_ENTITY_ID,
+    CONF_EXCLUDE,
     CONF_HOST,
+    CONF_INCLUDE,
     CONF_PASSWORD,
     CONF_PATH,
     CONF_PORT,
@@ -34,6 +49,11 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.entityfilter import (
+    CONF_DOMAINS,
+    CONF_ENTITIES,
+    CONF_ENTITY_GLOBS,
+)
 
 from . import (
     BASE_V1_CONFIG,
@@ -1221,3 +1241,179 @@ async def test_reconfigure_connection_error(
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
+
+
+@pytest.fixture(name="options_entry")
+async def options_entry_fixture(hass: HomeAssistant) -> MockConfigEntry:
+    """Return a set up config entry to run the options flow against."""
+    # The domain and attribute selectors are built from the existing states
+    hass.states.async_set("sensor.kitchen", "1", {"unit_of_measurement": "W"})
+
+    mock_entry = MockConfigEntry(domain=DOMAIN, data=BASE_V1_CONFIG)
+    mock_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(mock_entry.entry_id)
+    await hass.async_block_till_done()
+    return mock_entry
+
+
+@pytest.mark.parametrize(
+    ("step", "user_input", "expected_options"),
+    [
+        pytest.param(
+            "filter",
+            {
+                CONF_INCLUDE: {
+                    CONF_DOMAINS: ["sensor"],
+                    CONF_ENTITIES: ["light.kitchen"],
+                    CONF_ENTITY_GLOBS: ["binary_sensor.*"],
+                },
+                CONF_EXCLUDE: {
+                    CONF_DOMAINS: ["climate"],
+                    CONF_ENTITIES: ["sensor.secret"],
+                    CONF_ENTITY_GLOBS: ["sensor.private_*"],
+                },
+            },
+            {
+                CONF_INCLUDE: {
+                    CONF_DOMAINS: ["sensor"],
+                    CONF_ENTITIES: ["light.kitchen"],
+                    CONF_ENTITY_GLOBS: ["binary_sensor.*"],
+                },
+                CONF_EXCLUDE: {
+                    CONF_DOMAINS: ["climate"],
+                    CONF_ENTITIES: ["sensor.secret"],
+                    CONF_ENTITY_GLOBS: ["sensor.private_*"],
+                },
+            },
+            id="filter",
+        ),
+        pytest.param(
+            "attributes",
+            {
+                CONF_IGNORE_ATTRIBUTES: ["icon", "friendly_name"],
+                CONF_TAGS_ATTRIBUTES: ["device_class"],
+                CONF_TAGS: [{"key": "instance", "value": "production"}],
+            },
+            {
+                CONF_IGNORE_ATTRIBUTES: ["icon", "friendly_name"],
+                CONF_TAGS_ATTRIBUTES: ["device_class"],
+                CONF_TAGS: {"instance": "production"},
+            },
+            id="attributes",
+        ),
+        pytest.param(
+            "measurement",
+            {
+                CONF_MEASUREMENT_ATTR: "entity_id",
+                CONF_DEFAULT_MEASUREMENT: "state",
+                CONF_OVERRIDE_MEASUREMENT: "home_assistant",
+                CONF_PRECISION: "ms",
+                CONF_RETRY_COUNT: 3,
+            },
+            {
+                CONF_MEASUREMENT_ATTR: "entity_id",
+                CONF_DEFAULT_MEASUREMENT: "state",
+                CONF_OVERRIDE_MEASUREMENT: "home_assistant",
+                CONF_PRECISION: "ms",
+                CONF_RETRY_COUNT: 3,
+            },
+            id="measurement",
+        ),
+        pytest.param(
+            "customize",
+            {
+                CONF_COMPONENT_CONFIG: [
+                    {
+                        CONF_ENTITY_ID: "sensor.kitchen",
+                        CONF_OVERRIDE_MEASUREMENT: "kitchen",
+                    }
+                ],
+                CONF_COMPONENT_CONFIG_GLOB: [
+                    {
+                        "entity_glob": "sensor.weather_*",
+                        CONF_IGNORE_ATTRIBUTES: ["icon"],
+                    }
+                ],
+                CONF_COMPONENT_CONFIG_DOMAIN: [
+                    {CONF_DOMAIN: "climate", CONF_OVERRIDE_MEASUREMENT: "hvac"}
+                ],
+            },
+            {
+                CONF_COMPONENT_CONFIG: {
+                    "sensor.kitchen": {CONF_OVERRIDE_MEASUREMENT: "kitchen"}
+                },
+                CONF_COMPONENT_CONFIG_GLOB: {
+                    "sensor.weather_*": {CONF_IGNORE_ATTRIBUTES: ["icon"]}
+                },
+                CONF_COMPONENT_CONFIG_DOMAIN: {
+                    "climate": {CONF_OVERRIDE_MEASUREMENT: "hvac"}
+                },
+            },
+            id="customize",
+        ),
+    ],
+)
+@pytest.mark.parametrize("mock_client", [DEFAULT_API_VERSION], indirect=True)
+@pytest.mark.usefixtures("mock_client")
+async def test_options_flow(
+    hass: HomeAssistant,
+    options_entry: MockConfigEntry,
+    step: str,
+    user_input: dict[str, Any],
+    expected_options: dict[str, Any],
+) -> None:
+    """Test each step of the options flow stores its options."""
+    result = await hass.config_entries.options.async_init(options_entry.entry_id)
+
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "init"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": step}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == step
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert options_entry.options == expected_options
+
+
+@pytest.mark.parametrize("mock_client", [DEFAULT_API_VERSION], indirect=True)
+@pytest.mark.usefixtures("mock_client")
+async def test_options_flow_only_replaces_own_options(
+    hass: HomeAssistant,
+    options_entry: MockConfigEntry,
+) -> None:
+    """Test a step keeps the options of the other steps and drops cleared values."""
+    hass.config_entries.async_update_entry(
+        options_entry,
+        options={
+            CONF_DEFAULT_MEASUREMENT: "state",
+            CONF_RETRY_COUNT: 3,
+            CONF_TAGS: {"instance": "production"},
+        },
+    )
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(options_entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "measurement"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_MEASUREMENT_ATTR: "entity_id", CONF_RETRY_COUNT: 0},
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert options_entry.options == {
+        CONF_MEASUREMENT_ATTR: "entity_id",
+        CONF_RETRY_COUNT: 0,
+        CONF_TAGS: {"instance": "production"},
+    }
